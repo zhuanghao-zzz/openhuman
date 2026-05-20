@@ -21,11 +21,15 @@ jobs:
         with:
           fetch-depth: 1
           submodules: recursive
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.10.0
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v5
         with:
           node-version: 24.x
-          package-manager-cache: false
+          cache: pnpm
       - name: Install Rust (1.93.0)
         uses: dtolnay/rust-toolchain@1.93.0
         with:
@@ -67,7 +71,7 @@ jobs:
         shell: bash
         run: cargo install --locked --path app/src-tauri/vendor/tauri-cef/crates/tauri-cli
       - name: Install dependencies
-        run: yarn install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       # vite build runs via tauri.conf.json's beforeBuildCommand during the
       # "Build Tauri app" step below — no separate frontend build needed.
