@@ -1864,11 +1864,24 @@ pub fn run() {
 
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             // Another instance is already past this point — exit before we
-            // touch CEF at all. The plugin's WM_COPYDATA path won't run
-            // here (it needs an AppHandle from setup()), but the primary
-            // is already showing its window so the user experience is fine.
+            // touch CEF at all. The tauri-plugin-single-instance WM_COPYDATA
+            // path can't run here (it needs an AppHandle from setup()), so we
+            // write any openhuman:// URL to a handoff file for the primary to
+            // pick up via its background poller (see deep_link_handoff_poller).
             if !handle.is_null() {
                 unsafe { CloseHandle(handle) };
+            }
+            // Skip args[0] (exe path); URL is the next arg on Windows.
+            if let Some(url) = std::env::args().skip(1).find(|a| a.starts_with("openhuman://")) {
+                let handoff = std::env::temp_dir().join("openhuman_deeplink_handoff");
+                match std::fs::write(&handoff, &url) {
+                    Ok(_) => log::info!(
+                        "[single-instance] deep link written to handoff file (scheme=openhuman)"
+                    ),
+                    Err(e) => log::warn!(
+                        "[single-instance] failed to write deep link handoff: {e}"
+                    ),
+                }
             }
             log::info!(
                 "[single-instance] pre-CEF mutex held by primary; secondary exiting (OPENHUMAN-TAURI-A fix)"
@@ -2175,6 +2188,46 @@ pub fn run() {
                 if let Err(err) = app.deep_link().register_all() {
                     log::warn!("[deep-link] register_all failed (non-fatal): {err}");
                 }
+
+                // Poll for deep links written by secondary instances that exited
+                // via the pre-CEF mutex guard (before tauri-plugin-single-instance
+                // could forward the URL via WM_COPYDATA). The secondary writes the
+                // URL to a temp handoff file; we pick it up here and emit the
+                // standard deep-link event so onOpenUrl fires in the frontend.
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let handoff = std::env::temp_dir().join("openhuman_deeplink_handoff");
+                    log::info!("[deep-link] handoff poller started, watching {:?}", handoff);
+                    loop {
+                        if handoff.exists() {
+                            match std::fs::read_to_string(&handoff) {
+                                Ok(url) => {
+                                    let url = url.trim().to_string();
+                                    let _ = std::fs::remove_file(&handoff);
+                                    if url.starts_with("openhuman://") {
+                                        if let Ok(parsed) = url::Url::parse(&url) {
+                                            log::info!(
+                                                "[deep-link] handoff: scheme={} host={} path={}",
+                                                parsed.scheme(),
+                                                parsed.host_str().unwrap_or(""),
+                                                parsed.path()
+                                            );
+                                        }
+                                        log::info!("[deep-link] handoff: emitting deep-link://new-url");
+                                        match app_handle.emit("deep-link://new-url", vec![url]) {
+                                            Ok(_) => log::info!("[deep-link] handoff: emit ok"),
+                                            Err(e) => log::warn!("[deep-link] handoff: emit failed: {e}"),
+                                        }
+                                    } else {
+                                        log::warn!("[deep-link] handoff: unexpected content, ignoring");
+                                    }
+                                }
+                                Err(e) => log::warn!("[deep-link] handoff: read failed: {e}"),
+                            }
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    }
+                });
             }
             #[cfg(target_os = "linux")]
             {
