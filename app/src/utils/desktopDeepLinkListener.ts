@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 
 import { getCoreStateSnapshot, patchCoreStateSnapshot } from '../lib/coreState/store';
@@ -16,6 +17,11 @@ import { storeSession } from './tauriCommands';
 import { isTauri as coreIsTauri } from './tauriCommands/common';
 
 const SESSION_TOKEN_UPDATED_EVENT = 'core-state:session-token-updated';
+
+const dlog = (msg: string) => {
+  console.log('[DeepLink]', msg);
+  invoke('diag_log', { message: msg }).catch(() => {});
+};
 
 const sanitizeOAuthDiagnosticValue = (
   value: string | null,
@@ -99,30 +105,30 @@ const applySessionToken = async (sessionToken: string): Promise<void> => {
 const handleAuthDeepLink = async (parsed: URL) => {
   const token = parsed.searchParams.get('token');
   const key = parsed.searchParams.get('key');
-  console.log('[DeepLink][auth] handleAuthDeepLink called, hasToken=%s key=%s', !!token, key);
+  dlog(`handleAuthDeepLink called, hasToken=${!!token} key=${key}`);
   if (!token) {
-    console.warn('[DeepLink][auth] URL did not contain a token query parameter');
+    dlog('handleAuthDeepLink: missing token param');
     failDeepLinkAuthProcessing('Sign-in callback was missing a token. Please try again.');
     return;
   }
 
   beginDeepLinkAuthProcessing();
-  console.log('[DeepLink][auth] beginDeepLinkAuthProcessing, calling focusMainWindow');
+  dlog('beginDeepLinkAuthProcessing, calling focusMainWindow');
 
   try {
     await focusMainWindow();
-    console.log('[DeepLink][auth] focusMainWindow done, waiting for auth readiness');
+    dlog('focusMainWindow done, waiting for auth readiness');
     await waitForAuthReadiness();
-    console.log('[DeepLink][auth] auth readiness ok, key=%s → %s', key, key === 'auth' ? 'use token directly' : 'consumeLoginToken');
+    dlog(`auth readiness ok, key=${key} mode=${key === 'auth' ? 'direct-token' : 'consumeLoginToken'}`);
 
     const sessionToken = key === 'auth' ? token : await consumeLoginToken(token);
-    console.log('[DeepLink][auth] got sessionToken, calling applySessionToken');
+    dlog('got sessionToken, calling applySessionToken');
     await applySessionToken(sessionToken);
 
-    console.log('[DeepLink][auth] applySessionToken done, navigating to /home');
+    dlog('applySessionToken done, navigating to /home');
     window.location.hash = '/home';
     completeDeepLinkAuthProcessing();
-    console.log('[DeepLink][auth] auth complete');
+    dlog('auth complete');
   } catch (error) {
     console.error('[DeepLink][auth] failed to complete login:', error);
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -282,44 +288,44 @@ const handleOAuthDeepLink = async (parsed: URL) => {
  *   - `openhuman://payment/cancel` → Stripe payment cancellation
  */
 const handleDeepLinkUrls = async (urls: string[] | null | undefined) => {
-  console.log('[DeepLink] handleDeepLinkUrls called, urls count:', urls?.length ?? 0);
+  dlog(`handleDeepLinkUrls called, count=${urls?.length ?? 0}`);
   if (!urls || urls.length === 0) {
-    console.warn('[DeepLink] handleDeepLinkUrls: empty urls, returning early');
+    dlog('handleDeepLinkUrls: empty urls, returning early');
     return;
   }
 
   const url = urls[0];
   // Log scheme+host only, not the query string (may contain auth tokens).
   const safeUrl = url.split('?')[0];
-  console.log('[DeepLink] handling url (no query):', safeUrl);
+  dlog(`handling url (no query): ${safeUrl}`);
 
   try {
     const parsed = new URL(url);
-    console.log('[DeepLink] parsed protocol=%s hostname=%s path=%s', parsed.protocol, parsed.hostname, parsed.pathname);
+    dlog(`parsed protocol=${parsed.protocol} hostname=${parsed.hostname} path=${parsed.pathname}`);
     if (parsed.protocol !== 'openhuman:') {
-      console.warn('[DeepLink] Ignoring unsupported protocol:', parsed.protocol);
+      dlog(`ignoring unsupported protocol: ${parsed.protocol}`);
       return;
     }
 
     switch (parsed.hostname) {
       case 'auth':
-        console.log('[DeepLink] routing to handleAuthDeepLink');
+        dlog('routing to handleAuthDeepLink');
         await handleAuthDeepLink(parsed);
         break;
       case 'oauth':
-        console.log('[DeepLink] routing to handleOAuthDeepLink');
+        dlog('routing to handleOAuthDeepLink');
         await handleOAuthDeepLink(parsed);
         break;
       case 'payment':
-        console.log('[DeepLink] routing to handlePaymentDeepLink');
+        dlog('routing to handlePaymentDeepLink');
         await handlePaymentDeepLink(parsed);
         break;
       default:
-        console.warn('[DeepLink] Unknown deep link hostname:', parsed.hostname);
+        dlog(`unknown deep link hostname: ${parsed.hostname}`);
         break;
     }
   } catch (error) {
-    // Avoid logging full `url` — OAuth callbacks can include sensitive query params.
+    dlog(`handleDeepLinkUrls FAILED: ${String(error)}`);
     console.error('[DeepLink] Failed to handle deep link:', error);
   }
 };
@@ -330,40 +336,41 @@ const handleDeepLinkUrls = async (urls: string[] | null | undefined) => {
  * Only works in Tauri desktop app environment.
  */
 export const setupDesktopDeepLinkListener = async () => {
-  console.log('[DeepLink] setupDesktopDeepLinkListener called, isTauri=%s', coreIsTauri());
+  dlog(`setupDesktopDeepLinkListener called, isTauri=${coreIsTauri()}`);
   // Only set up deep link listener in Tauri environment
   if (!coreIsTauri()) {
-    console.log('[DeepLink] not in Tauri environment, skipping');
+    dlog('not in Tauri environment, skipping');
     return;
   }
 
   try {
-    console.log('[DeepLink] calling getCurrent() to check startup deep link');
+    dlog('calling getCurrent() to check startup deep link');
     const startUrls = await getCurrent();
-    console.log('[DeepLink] getCurrent() returned:', startUrls);
+    dlog(`getCurrent() returned: ${JSON.stringify(startUrls)}`);
     if (startUrls) {
-      console.log('[DeepLink] processing startup deep link urls:', startUrls.length);
+      dlog(`processing startup deep link, count=${startUrls.length}`);
       await handleDeepLinkUrls(startUrls);
     } else {
-      console.log('[DeepLink] no startup deep link url');
+      dlog('no startup deep link url');
     }
 
-    console.log('[DeepLink] registering onOpenUrl listener');
+    dlog('registering onOpenUrl listener');
     await onOpenUrl(urls => {
-      console.log('[DeepLink] onOpenUrl fired, urls count:', urls.length, 'first scheme:', urls[0]?.split('://')[0]);
+      dlog(`onOpenUrl fired, count=${urls.length} first-scheme=${urls[0]?.split('://')[0]}`);
       void handleDeepLinkUrls(urls);
     });
-    console.log('[DeepLink] onOpenUrl listener registered ok');
+    dlog('onOpenUrl listener registered ok');
 
     if (typeof window !== 'undefined') {
       const win = window as Window & { __simulateDeepLink?: (url: string) => Promise<void> };
       win.__simulateDeepLink = (url: string) => {
-        console.log('[DeepLink] __simulateDeepLink called');
+        dlog('__simulateDeepLink called');
         return handleDeepLinkUrls([url]);
       };
     }
-    console.log('[DeepLink] setup complete');
+    dlog('setup complete');
   } catch (err) {
+    dlog(`Setup FAILED: ${String(err)}`);
     console.error('[DeepLink] Setup failed:', err);
   }
 };

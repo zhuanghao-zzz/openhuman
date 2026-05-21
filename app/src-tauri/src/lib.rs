@@ -879,6 +879,15 @@ async fn install_app_update(
     app.restart();
 }
 
+/// Diagnostic log bridge — lets the JS frontend write a line into the
+/// unified Rust log file (same file visible via `reveal_logs_folder`).
+/// Used during deep-link debugging so JS-side events appear alongside
+/// Rust single-instance / deep-link trace lines in the same file.
+#[tauri::command]
+fn diag_log(message: String) {
+    log::info!("[js-diag] {message}");
+}
+
 /// Register (or re-register) the global dictation toggle hotkey.
 /// Emits `dictation://toggle` to all webviews when the shortcut is pressed.
 #[tauri::command]
@@ -2801,6 +2810,7 @@ pub fn run() {
             native_notifications::show_native_notification,
             mascot_window_show,
             mascot_window_hide,
+            diag_log,
             file_logging::reveal_logs_folder,
             file_logging::logs_folder_path,
             meet_call::meet_call_open_window,
