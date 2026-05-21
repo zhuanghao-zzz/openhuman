@@ -2085,6 +2085,18 @@ pub fn run() {
                     args.len(),
                     !cwd.is_empty()
                 );
+                // On Windows, opening openhuman:// while the app is running launches a
+                // second process (Windows URL scheme mechanics). single-instance intercepts
+                // it here. We manually emit the deep-link event so the frontend's onOpenUrl
+                // handler fires — the tauri-plugin-deep-link integration via
+                // features=["deep-link"] may not forward the URL in all plugin revisions.
+                // Skip args[0] (executable path); the URL is the next arg.
+                if let Some(url) = args.iter().skip(1).find(|a| a.starts_with("openhuman://")) {
+                    log::info!("[single-instance] forwarding openhuman:// deep link to frontend");
+                    if let Err(e) = app.emit("deep-link://new-url", vec![url.clone()]) {
+                        log::warn!("[single-instance] failed to emit deep-link event: {e}");
+                    }
+                }
                 if let Err(err) = show_main_window(app) {
                     log::warn!("[single-instance] failed to focus main window: {err}");
                 }
