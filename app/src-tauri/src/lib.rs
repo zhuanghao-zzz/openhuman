@@ -2077,28 +2077,43 @@ pub fn run() {
         // — we just need to wake the primary so it observes them.
         .plugin(tauri_plugin_single_instance::init(
             |app: &AppHandle<AppRuntime>, args, cwd| {
-                // Don't log raw argv/cwd: deep-link callbacks (OAuth codes,
-                // magic links) can carry auth tokens that would otherwise leak
-                // into desktop logs and Sentry breadcrumbs. CodeRabbit on #1510.
                 log::info!(
-                    "[single-instance] secondary launch detected, focusing primary (argc={}, cwd_present={})",
+                    "[single-instance] secondary launch detected (argc={}, cwd_present={})",
                     args.len(),
                     !cwd.is_empty()
                 );
-                // On Windows, opening openhuman:// while the app is running launches a
-                // second process (Windows URL scheme mechanics). single-instance intercepts
-                // it here. We manually emit the deep-link event so the frontend's onOpenUrl
-                // handler fires — the tauri-plugin-deep-link integration via
-                // features=["deep-link"] may not forward the URL in all plugin revisions.
-                // Skip args[0] (executable path); the URL is the next arg.
-                if let Some(url) = args.iter().skip(1).find(|a| a.starts_with("openhuman://")) {
-                    log::info!("[single-instance] forwarding openhuman:// deep link to frontend");
-                    if let Err(e) = app.emit("deep-link://new-url", vec![url.clone()]) {
-                        log::warn!("[single-instance] failed to emit deep-link event: {e}");
-                    }
+                // Log each arg with its index; redact anything after '?' to avoid
+                // leaking auth tokens into logs while keeping scheme+host visible.
+                for (i, arg) in args.iter().enumerate() {
+                    let safe = if let Some(q) = arg.find('?') {
+                        format!("{}[query redacted]", &arg[..q])
+                    } else {
+                        arg.clone()
+                    };
+                    log::info!("[single-instance] arg[{i}] = {safe:?}");
                 }
-                if let Err(err) = show_main_window(app) {
-                    log::warn!("[single-instance] failed to focus main window: {err}");
+                // Find openhuman:// URL in args (skip args[0] = exe path).
+                let deep_link_url = args.iter().skip(1).find(|a| a.starts_with("openhuman://")).cloned();
+                log::info!("[single-instance] openhuman:// url found in args: {}", deep_link_url.is_some());
+                if let Some(ref url) = deep_link_url {
+                    // Log scheme+host only, not the token in the query string.
+                    if let Ok(parsed) = url::Url::parse(url) {
+                        log::info!(
+                            "[single-instance] deep link scheme={} host={} path={}",
+                            parsed.scheme(), parsed.host_str().unwrap_or(""), parsed.path()
+                        );
+                    }
+                    log::info!("[single-instance] emitting deep-link://new-url to frontend");
+                    match app.emit("deep-link://new-url", vec![url.clone()]) {
+                        Ok(_) => log::info!("[single-instance] emit deep-link://new-url ok"),
+                        Err(e) => log::warn!("[single-instance] emit deep-link://new-url FAILED: {e}"),
+                    }
+                } else {
+                    log::warn!("[single-instance] no openhuman:// url in args — deep link will NOT be forwarded");
+                }
+                match show_main_window(app) {
+                    Ok(_) => log::info!("[single-instance] show_main_window ok"),
+                    Err(e) => log::warn!("[single-instance] show_main_window failed: {e}"),
                 }
             },
         ))

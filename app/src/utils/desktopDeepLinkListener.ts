@@ -99,23 +99,30 @@ const applySessionToken = async (sessionToken: string): Promise<void> => {
 const handleAuthDeepLink = async (parsed: URL) => {
   const token = parsed.searchParams.get('token');
   const key = parsed.searchParams.get('key');
+  console.log('[DeepLink][auth] handleAuthDeepLink called, hasToken=%s key=%s', !!token, key);
   if (!token) {
-    console.warn('[DeepLink] URL did not contain a token query parameter');
+    console.warn('[DeepLink][auth] URL did not contain a token query parameter');
     failDeepLinkAuthProcessing('Sign-in callback was missing a token. Please try again.');
     return;
   }
 
   beginDeepLinkAuthProcessing();
+  console.log('[DeepLink][auth] beginDeepLinkAuthProcessing, calling focusMainWindow');
 
   try {
     await focusMainWindow();
+    console.log('[DeepLink][auth] focusMainWindow done, waiting for auth readiness');
     await waitForAuthReadiness();
+    console.log('[DeepLink][auth] auth readiness ok, key=%s → %s', key, key === 'auth' ? 'use token directly' : 'consumeLoginToken');
 
     const sessionToken = key === 'auth' ? token : await consumeLoginToken(token);
+    console.log('[DeepLink][auth] got sessionToken, calling applySessionToken');
     await applySessionToken(sessionToken);
 
+    console.log('[DeepLink][auth] applySessionToken done, navigating to /home');
     window.location.hash = '/home';
     completeDeepLinkAuthProcessing();
+    console.log('[DeepLink][auth] auth complete');
   } catch (error) {
     console.error('[DeepLink][auth] failed to complete login:', error);
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -275,14 +282,20 @@ const handleOAuthDeepLink = async (parsed: URL) => {
  *   - `openhuman://payment/cancel` → Stripe payment cancellation
  */
 const handleDeepLinkUrls = async (urls: string[] | null | undefined) => {
+  console.log('[DeepLink] handleDeepLinkUrls called, urls count:', urls?.length ?? 0);
   if (!urls || urls.length === 0) {
+    console.warn('[DeepLink] handleDeepLinkUrls: empty urls, returning early');
     return;
   }
 
   const url = urls[0];
+  // Log scheme+host only, not the query string (may contain auth tokens).
+  const safeUrl = url.split('?')[0];
+  console.log('[DeepLink] handling url (no query):', safeUrl);
 
   try {
     const parsed = new URL(url);
+    console.log('[DeepLink] parsed protocol=%s hostname=%s path=%s', parsed.protocol, parsed.hostname, parsed.pathname);
     if (parsed.protocol !== 'openhuman:') {
       console.warn('[DeepLink] Ignoring unsupported protocol:', parsed.protocol);
       return;
@@ -290,12 +303,15 @@ const handleDeepLinkUrls = async (urls: string[] | null | undefined) => {
 
     switch (parsed.hostname) {
       case 'auth':
+        console.log('[DeepLink] routing to handleAuthDeepLink');
         await handleAuthDeepLink(parsed);
         break;
       case 'oauth':
+        console.log('[DeepLink] routing to handleOAuthDeepLink');
         await handleOAuthDeepLink(parsed);
         break;
       case 'payment':
+        console.log('[DeepLink] routing to handlePaymentDeepLink');
         await handlePaymentDeepLink(parsed);
         break;
       default:
@@ -314,28 +330,39 @@ const handleDeepLinkUrls = async (urls: string[] | null | undefined) => {
  * Only works in Tauri desktop app environment.
  */
 export const setupDesktopDeepLinkListener = async () => {
+  console.log('[DeepLink] setupDesktopDeepLinkListener called, isTauri=%s', coreIsTauri());
   // Only set up deep link listener in Tauri environment
   if (!coreIsTauri()) {
+    console.log('[DeepLink] not in Tauri environment, skipping');
     return;
   }
 
   try {
+    console.log('[DeepLink] calling getCurrent() to check startup deep link');
     const startUrls = await getCurrent();
+    console.log('[DeepLink] getCurrent() returned:', startUrls);
     if (startUrls) {
+      console.log('[DeepLink] processing startup deep link urls:', startUrls.length);
       await handleDeepLinkUrls(startUrls);
+    } else {
+      console.log('[DeepLink] no startup deep link url');
     }
 
+    console.log('[DeepLink] registering onOpenUrl listener');
     await onOpenUrl(urls => {
+      console.log('[DeepLink] onOpenUrl fired, urls count:', urls.length, 'first scheme:', urls[0]?.split('://')[0]);
       void handleDeepLinkUrls(urls);
     });
+    console.log('[DeepLink] onOpenUrl listener registered ok');
 
     if (typeof window !== 'undefined') {
-      // window.__simulateDeepLink('openhuman://auth?token=1234567890')
-      // window.__simulateDeepLink('openhuman://oauth/success?integrationId=69cafd0b103bd070232d3223&provider=notion')
-      // window.__simulateDeepLink('openhuman://oauth/success?integrationId=69cafd0b103bd070232d3223&skillId=discord')
       const win = window as Window & { __simulateDeepLink?: (url: string) => Promise<void> };
-      win.__simulateDeepLink = (url: string) => handleDeepLinkUrls([url]);
+      win.__simulateDeepLink = (url: string) => {
+        console.log('[DeepLink] __simulateDeepLink called');
+        return handleDeepLinkUrls([url]);
+      };
     }
+    console.log('[DeepLink] setup complete');
   } catch (err) {
     console.error('[DeepLink] Setup failed:', err);
   }
